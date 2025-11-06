@@ -1,5 +1,5 @@
 {
-    "blade": {
+    "propeller": {
 
     },
 
@@ -19,7 +19,7 @@
 
     },
 
-    "MTOW": 20.0,
+    "MTOW": 5.5,
 
     "performance": {
         
