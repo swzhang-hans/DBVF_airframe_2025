@@ -54,118 +54,138 @@ def load_propeller_data(filepath):
 import numpy as np
 import pandas as pd
 
-def analyze_propellers(prop_data, required_thrust_N, target_thrust_N, output_name="propeller_selection_SI"):
+def analyze_propellers(prop_data, required_thrust_N, target_thrust_N, output_name="prop_selection_SI"):
     """
-    Analyze propeller performance (SI units).
-
-    For each propeller that can exceed the required thrust:
-    - Interpolates RPM, Power, Torque, and Efficiency at the required thrust.
-    - Also reports RPM, Power, Torque, and Efficiency at a given target thrust.
-    - Efficiency is computed as Thrust/Power (N/W).
+    For each propeller that can reach `required_thrust_N`, interpolate and export:
+      - RPM, Thrust (N), Power (W), Torque (Nm), Cp, Ct, FOM at required thrust
+      - RPM, Thrust (N), Power (W), Torque (Nm), Cp, Ct, FOM at target thrust
+    Also includes efficiency (N/W) at both points for ranking.
+    Exports CSV and pretty .dat; returns a DataFrame.
 
     Parameters
     ----------
-    prop_data : dict[str, pd.DataFrame]
-        Output from load_prop_data()
-    required_thrust_N : float
-        The design or required maximum thrust (N)
-    target_thrust_N : float
-        A smaller thrust at which performance is also compared (N)
-    output_name : str, optional
-        Base name for the output files (without extension).
-        Example: "prop_test_80N" → "prop_test_80N.csv" and ".dat"
-
-    Returns
-    -------
-    results_df : pd.DataFrame
-        Summary table of propeller performance (SI units)
+    prop_data : dict[str, pd.DataFrame]  # from load_prop_data()
+    required_thrust_N : float            # required thrust (N)
+    target_thrust_N   : float            # target thrust (N)
+    output_name       : str              # base filename (no extension)
     """
 
-    # --- Unit conversion constants ---
-    LBF_TO_N = 4.44822
-    HP_TO_W = 745.7
+    # Unit conversion constants
+    LBF_TO_N   = 4.44822
+    HP_TO_W    = 745.7
     INLBF_TO_NM = 0.113
 
-    results = []
+    def safe_interp(x, xp, fp):
+        """Return NaN if x is outside [min(xp), max(xp)], else linear interp."""
+        xp = np.asarray(xp); fp = np.asarray(fp)
+        if len(xp) == 0 or np.isnan(x) or np.any(np.isnan(xp)) or np.any(np.isnan(fp)):
+            return np.nan
+        xmin, xmax = np.nanmin(xp), np.nanmax(xp)
+        if x < xmin or x > xmax:
+            return np.nan
+        # np.interp requires strictly increasing xp; sort & deduplicate
+        order = np.argsort(xp)
+        xp_sorted = xp[order]
+        fp_sorted = fp[order]
+        # drop duplicate xp to avoid issues
+        uniq_mask = np.concatenate(([True], xp_sorted[1:] != xp_sorted[:-1]))
+        return float(np.interp(x, xp_sorted[uniq_mask], fp_sorted[uniq_mask]))
+
+    rows = []
 
     for name, df in prop_data.items():
-        # Convert numeric columns safely
-        df = df.apply(pd.to_numeric, errors="coerce").dropna()
+        # ensure numeric & drop garbage rows
+        df = df.apply(pd.to_numeric, errors="coerce").dropna(how="any")
 
         # Convert to SI
-        df["Thrust_N"] = df["THRUST"] * LBF_TO_N
-        df["Power_W"] = df["POWER"] * HP_TO_W
-        df["Torque_Nm"] = df["TORQUE"] * INLBF_TO_NM
+        thrust_N   = df["THRUST"] * LBF_TO_N
+        power_W    = df["POWER"]  * HP_TO_W
+        torque_Nm  = df["TORQUE"] * INLBF_TO_NM
+        rpm        = df["RPM"].to_numpy()
+        Cp         = df["Cp"].to_numpy()      if "Cp"  in df.columns else df["Cp".upper()].to_numpy()
+        Ct         = df["Ct"].to_numpy()      if "Ct"  in df.columns else df["Ct".upper()].to_numpy()
+        FOM        = df["FOM"].to_numpy()     if "FOM" in df.columns else df["FOM".upper()].to_numpy()
 
-        # Compute thrust-to-power efficiency [N/W]
-        df["efficiency"] = df["Thrust_N"] / df["Power_W"].replace(0, np.nan)
-
-        # Skip propellers that cannot achieve required thrust
-        if df["Thrust_N"].max() < required_thrust_N:
+        # Skip if prop cannot reach the required thrust
+        if (np.nanmax(thrust_N) < required_thrust_N) or (np.nanmin(thrust_N) > target_thrust_N):
             continue
 
-        # --- Interpolate at required thrust (main design point) ---
-        rpm_req = np.interp(required_thrust_N, df["Thrust_N"], df["RPM"])
-        power_req = np.interp(required_thrust_N, df["Thrust_N"], df["Power_W"])
-        torque_req = np.interp(required_thrust_N, df["Thrust_N"], df["Torque_Nm"])
-        eff_req = np.interp(required_thrust_N, df["Thrust_N"], df["efficiency"])
+        # Efficiency array (avoid /0)
+        #eff = np.divide(thrust_N, power_W, out=np.full_like(thrust_N, np.nan, dtype=float), where=power_W!=0)
+        eff = thrust_N / power_W
 
-        # --- Interpolate at target thrust (secondary point) ---
-        rpm_tgt = np.interp(target_thrust_N, df["Thrust_N"], df["RPM"])
-        power_tgt = np.interp(target_thrust_N, df["Thrust_N"], df["Power_W"])
-        torque_tgt = np.interp(target_thrust_N, df["Thrust_N"], df["Torque_Nm"])
-        eff_tgt = np.interp(target_thrust_N, df["Thrust_N"], df["efficiency"])
+        # Interpolate at required thrust
+        rpm_req     = safe_interp(required_thrust_N, thrust_N, rpm)
+        thrust_req  = required_thrust_N
+        power_req   = safe_interp(required_thrust_N, thrust_N, power_W)
+        torque_req  = safe_interp(required_thrust_N, thrust_N, torque_Nm)
+        Cp_req      = safe_interp(required_thrust_N, thrust_N, Cp)
+        Ct_req      = safe_interp(required_thrust_N, thrust_N, Ct)
+        FOM_req     = safe_interp(required_thrust_N, thrust_N, FOM)
+        eff_req     = safe_interp(required_thrust_N, thrust_N, eff)
 
-        results.append({
+        # Interpolate at target thrust
+        rpm_tgt     = safe_interp(target_thrust_N, thrust_N, rpm)
+        thrust_tgt  = target_thrust_N if (np.nanmin(thrust_N) <= target_thrust_N <= np.nanmax(thrust_N)) else np.nan
+        power_tgt   = safe_interp(target_thrust_N, thrust_N, power_W)
+        torque_tgt  = safe_interp(target_thrust_N, thrust_N, torque_Nm)
+        Cp_tgt      = safe_interp(target_thrust_N, thrust_N, Cp)
+        Ct_tgt      = safe_interp(target_thrust_N, thrust_N, Ct)
+        FOM_tgt     = safe_interp(target_thrust_N, thrust_N, FOM)
+        eff_tgt     = safe_interp(target_thrust_N, thrust_N, eff)
+
+        rows.append({
             "Propeller": name,
-            f"RPM at {required_thrust_N:.0f} N": int(rpm_req),
-            f"Power at {required_thrust_N:.0f} N (W)": round(power_req, 2),
-            f"Torque at {required_thrust_N:.0f} N (Nm)": round(torque_req, 4),
-            f"Efficiency at {required_thrust_N:.0f} N (N/W)": round(eff_req, 6),
-            f"RPM at {target_thrust_N:.0f} N": int(rpm_tgt),
-            f"Power at {target_thrust_N:.0f} N (W)": round(power_tgt, 2),
-            f"Torque at {target_thrust_N:.0f} N (Nm)": round(torque_tgt, 4),
-            f"Efficiency at {target_thrust_N:.0f} N (N/W)": round(eff_tgt, 6),
+
+            # Required thrust block
+            f"RPM@{required_thrust_N:.0f}N":                 None if np.isnan(rpm_req)    else int(round(rpm_req)),
+            f"Thrust@{required_thrust_N:.0f}N (N)":          round(thrust_req, 3),
+            f"Power@{required_thrust_N:.0f}N (W)":           None if np.isnan(power_req)  else round(power_req, 3),
+            f"Torque@{required_thrust_N:.0f}N (Nm)":         None if np.isnan(torque_req) else round(torque_req, 4),
+            f"Cp@{required_thrust_N:.0f}N":                  None if np.isnan(Cp_req)     else round(Cp_req, 5),
+            f"Ct@{required_thrust_N:.0f}N":                  None if np.isnan(Ct_req)     else round(Ct_req, 5),
+            f"FOM@{required_thrust_N:.0f}N":                 None if np.isnan(FOM_req)    else round(FOM_req, 5),
+            f"Eff@{required_thrust_N:.0f}N (N/W)":           None if np.isnan(eff_req)    else round(eff_req, 6),
+
+            # Target thrust block
+            f"RPM@{target_thrust_N:.0f}N":                   None if np.isnan(rpm_tgt)    else int(round(rpm_tgt)),
+            f"Thrust@{target_thrust_N:.0f}N (N)":            None if np.isnan(thrust_tgt) else round(thrust_tgt, 3),
+            f"Power@{target_thrust_N:.0f}N (W)":             None if np.isnan(power_tgt)  else round(power_tgt, 3),
+            f"Torque@{target_thrust_N:.0f}N (Nm)":           None if np.isnan(torque_tgt) else round(torque_tgt, 4),
+            f"Cp@{target_thrust_N:.0f}N":                    None if np.isnan(Cp_tgt)     else round(Cp_tgt, 5),
+            f"Ct@{target_thrust_N:.0f}N":                    None if np.isnan(Ct_tgt)     else round(Ct_tgt, 5),
+            f"FOM@{target_thrust_N:.0f}N":                   None if np.isnan(FOM_tgt)    else round(FOM_tgt, 5),
+            f"Eff@{target_thrust_N:.0f}N (N/W)":             None if np.isnan(eff_tgt)    else round(eff_tgt, 6),
         })
 
-    # --- Handle case where no prop meets the requirement ---
-    if not results:
-        print("⚠️ No propellers meet the required thrust condition.")
+    if not rows:
+        print("⚠️ No propellers can reach the required thrust.")
         return pd.DataFrame()
 
-    # --- Build and sort DataFrame (best efficiency at required thrust first) ---
-    results_df = pd.DataFrame(results)
-    results_df = results_df.sort_values(
-        by=f"Efficiency at {required_thrust_N:.0f} N (N/W)",
-        ascending=False
+    df_out = pd.DataFrame(rows)
+
+    # Rank by lower Power at required thrust (i.e., better efficiency)
+    df_out = df_out.sort_values(
+        by=f"Power@{required_thrust_N:.0f}N (W)", ascending=True, na_position="last"
     ).reset_index(drop=True)
 
-    # --- Export filenames ---
+    # Export
     csv_path = f"{output_name}.csv"
     dat_path = f"{output_name}.dat"
+    df_out.to_csv(csv_path, index=False)
 
-    # --- Export to CSV (for data processing) ---
-    results_df.to_csv(csv_path, index=False)
-
-    # --- Export to .dat (for human readability) ---
-    formatted_str = results_df.to_string(
-        index=False,
-        justify="right",
-        float_format="{:10.4f}".format
-    )
-
+    formatted = df_out.to_string(index=False, justify="right", float_format="{:10.4f}".format)
     with open(dat_path, "w") as f:
-        f.write(f"# Propeller performance at {required_thrust_N:.0f} N required thrust\n")
-        f.write(f"# Also evaluated at {target_thrust_N:.0f} N target thrust\n")
-        f.write("# All units in SI (N, W, Nm, N/W)\n")
-        f.write("# ------------------------------------------------------------\n\n")
-        f.write(formatted_str)
+        f.write(f"# Interpolated propeller performance at {required_thrust_N:.0f} N (required) "
+                f"and {target_thrust_N:.0f} N (target)\n")
+        f.write("# SI units: Thrust=N, Power=W, Torque=Nm; Cp, Ct, FOM dimensionless; \n")
+        f.write("# Sorted by Power at required thrust (ascending)\n")
+        f.write("# ---------------------------------------------------------------------------\n\n")
+        f.write(formatted)
 
-    print(f"✅ {len(results_df)} propellers exceed {required_thrust_N:.1f} N requirement.")
+    print(f"✅ {len(df_out)} propellers can reach {required_thrust_N:.1f} N.")
     print(f"Results exported to '{csv_path}' and '{dat_path}'.")
-
-    return results_df
-
+    return df_out
 
 data = load_propeller_data("PER2_STATIC-2.dat")
-analyze_propellers(data, 17, 8.4, "propeller_select_17-84")
+analyze_propellers(data, 30.5, 11, "propeller_select_61")
