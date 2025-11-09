@@ -188,4 +188,4 @@ def analyze_propellers(prop_data, required_thrust_N, target_thrust_N, output_nam
     return df_out
 
 data = load_propeller_data("PER2_STATIC-2.dat")
-analyze_propellers(data, 30.5, 11, "propeller_select_61")
+analyze_propellers(data, 32, 12.5, "propeller_select")
