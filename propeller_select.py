@@ -51,9 +51,6 @@ def load_propeller_data(filepath):
     return prop_data
 
 
-import numpy as np
-import pandas as pd
-
 def analyze_propellers(prop_data, required_thrust_N, target_thrust_N, output_name="prop_selection_SI"):
     """
     For each propeller that can reach `required_thrust_N`, interpolate and export:
@@ -188,4 +185,4 @@ def analyze_propellers(prop_data, required_thrust_N, target_thrust_N, output_nam
     return df_out
 
 data = load_propeller_data("PER2_STATIC-2.dat")
-analyze_propellers(data, 32, 12.5, "propeller_select")
+analyze_propellers(data, 35, 14, "propeller_select")
